@@ -20,6 +20,32 @@ To get started with our project, you can follow these steps:
 2. Open the `all_code.R` file in your preferred R environment (e.g., RStudio) and run the code to perform the data analysis and generate the plots.
 3. If you wish to regenerate or modify the report, open the `report_submission1.Rmd` file in your R environment and use the "Knit" button to compile the
 
-We hope you find our project helpful and informative. If you have any questions or suggestions, please feel free to contact us.
+## Introduction to Project
 
-Happy analyzing!
+Glaucoma, a group of eye diseases damaging the optic nerve, can lead to vision loss or irreversible blindness
+if left untreated (Quigley & Broman, 2006). It affects nearly 80 million people as of 2023 (Tham et al., 2014).
+The disease often progresses slowly, without noticeable symptoms, until irreversible vision loss occurs, making
+early detection and monitoring crucial for effective treatment (Kass et al., 2002).
+Patients routinely undergo visual field examinations to monitor glaucoma status, providing a functional assessment of vision across the field (Bengtsson & Heijl, 2005). These longitudinal series of visual fields are used
+by clinicians to determine disease progression rates. However, the data contains complex spatial and temporal
+dependencies that must be considered when determining progression.
+
+In this case study, we investigate early onset glaucoma patients in the dataset and predict glaucoma progression.
+We explore whether a spatial model, specifically an areal model, improves prediction over a non-spatial model,
+such as simple linear regression. Specifically, we look to train the models on the first 5 visual fields and see if
+the spatial or non-spatial model better predicts the future visual fields. This research question holds significant
+clinical importance as it can potentially enhance disease progression predictions, leading to improved treatment
+options and patient outcomes (Yousefi et al., 2015).
+
+We hypothesize that, among early onset glaucoma patients, spatial modeling using areal models will yield more
+accurate predictions of disease progression than non-spatial modeling approaches like simple linear regression.
+This is based on the spatial nature of visual field data in glaucoma patients, as the disease affects different
+visual field regions in distinct patterns. Areal models, a type of spatial model, account for spatial dependencies
+and topographical relationships between visual field regions, revealing insights about disease progression. On
+the other hand, non-spatial models do not consider these spatial relationships and may fail to capture essential
+patterns.
+
+In general, our results could improve clinical decision-making and care quality for this patient population
+
+To read our results, view Final_Report.pdf. If you would like to look at the code interwoven with the written results,
+view Final_Report_With_Code.qmd.
