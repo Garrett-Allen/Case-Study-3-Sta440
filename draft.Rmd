@@ -1,0 +1,92 @@
+---
+title: "Draft Work"
+output: html_document
+date: "2023-03-07"
+---
+
+```{r setup, include=FAL
+```{r}
+# ###Format data
+blind_spot <- c(26, 35) # define blind spot
+dat_model <- dat[order(dat$location), ] # sort by location
+dat_model <- dat[!dat$location %in% blind_spot, ] # remove blind spot locations
+Y <- dat_model$dls # define observed outcome data
+Time <- unique(dat_model$years)
+  W <- HFAII_Queen[-blind_spot, -blind_spot] # visual field adjacency matrix
+DM <- GarwayHeath[-blind_spot] # Garway-Heath angles
+TimeDist <- abs(outer(Time, Time, "-"))
+TimeDistVec <- TimeDist[lower.tri(TimeDist)]
+minDiff <- min(TimeDistVec)
+maxDiff <- max(TimeDistVec)
+PhiUpper <- -log(0.01) / minDiff # shortest diff goes down to 1%
+PhiLower <- -log(0.95) / maxDiff # longest diff goes up to 95%
+Hypers <- list(Delta = list(MuDelta = c(3, 0, 0), OmegaDelta = diag(c(1000, 1000, 1))),
+               T = list(Xi = 4, Psi = diag(3)),
+               Phi = list(APhi = PhiLower, BPhi = PhiUpper))
+Starting <- list(Delta = c(3, 0, 0), T = diag(3), Phi = 0.5)
+Nu <- length(Time) # calculate number of visits
+Tuning <- list(Theta2 = rep(1, Nu), Theta3 = rep(1, Nu), Phi = 1)
+MCMC <- list(NBurn = 10000, NSims = 250000, NThin = 25, NPilot = 20)
+PlotAdjacency(W = W, DM = DM, zlim = c(0, 180), Visit = NA,
+              main = "Garway-Heath dissimilarity metric\n across the visual field")
+
+reg.STBDwDM <- STBDwDM(Y = Y, DM = DM, W = W, Time = Time,
+                       Starting = Starting,
+                       Hypers = Hypers,
+                       Tuning = Tuning,
+                       MCMC = MCMC,
+                       Family = "tobit",
+                       TemporalStructure = "exponential",
+                       Distance = "circumference",
+                       Weights = "continuous",
+                       Rho = 0.99,
+                       ScaleY = 10,
+                       ScaleDM = 100,
+                       Seed = 54)
+
+#encoded as negative
+```
+```{r}
+dat = dat %>% 
+  mutate(dls_scaled = dls/10)
+
+dat$dls_scaled[dat$dls_scaled == -0.1] <- 0
+Time_inc <- (unique(dat$age) / 365)
+datmodel_o <- data.frame(Y = (dat$dls) / 10) # create data frame with scaled data
+M <- dim(W)[1] # number of locations
+TimeDist <- as.matrix(dist(Time))
+BPsi <- log(0.025) / -min(TimeDist[TimeDist > 0])
+APsi <- log(0.975) / -max(TimeDist)
+K <- 10
+O <- 1
+Hypers <- list(Sigma2 = list(A = 0.001, B = 0.001),
+               Kappa = list(SmallUpsilon = O + 1, 
+                            BigTheta = diag(O)),
+               Delta = list(A1 = 1, A2 = 20),
+               Psi = list(APsi = APsi, BPsi = BPsi),
+               Upsilon = list(Zeta = K + 1, Omega = diag(K)))
+Starting <- list(Sigma2 = 1,
+                 Kappa = diag(O),
+                 Delta = 2 * (1:K),
+                 Psi = (APsi + BPsi) / 2,
+                 Upsilon = diag(K))
+Tuning <- list(Psi = 1)
+# MCMC <- list(NBurn = 1000, NSims = 1000, NThin = 2, NPilot = 5)
+# reg.bfa_sp <- bfa_sp(dls_scaled ~ iop, data = dat, dist = W, time = sort(Time_inc),  K = 10, 
+#                      starting = Starting,
+#                      hypers = Hypers,
+#                      tuning = Tuning,
+#                      mcmc = MCMC,
+#                      L = Inf,
+#                      family = "tobit",
+#                      trials = NULL,
+#                      temporal.structure = "exponential",
+#                      spatial.structure = "discrete",
+#                      seed = 54, 
+#                      gamma.shrinkage = TRUE,
+#                      include.space = TRUE,
+#                      clustering = TRUE)
+
+
+```
+

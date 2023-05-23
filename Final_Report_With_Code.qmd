@@ -1,0 +1,748 @@
+---
+title: "Case 3 Report"
+subtitle: "Garrett Allen, Kartik Chamarti, Rob Wilds, Rami Sbahi"
+output: pdf_document
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{amsfonts}
+  - \usepackage{amssymb}
+  - \usepackage{float}
+  - \floatplacement{figure}{H}
+format: pdf
+geometry: 
+  - top = 15mm
+  - left = 15mm
+  - right = 15mm
+  - bottom = 25mm
+fontsize: 11pt
+---
+
+Run-time: 2 minutes.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+#| label: install-packages
+#| message: false
+#| warning: false
+#| echo: false
+
+packages <- c('tidyverse', 'sf','womblR','tidymodels','spBFA', 'knitr', 'yardstick', 'patchwork', 'kableExtra')
+install.packages(setdiff(packages, rownames(installed.packages())))
+```
+
+```{r}
+#| label: load-packages
+#| message: false
+#| warning: false
+#| echo: false
+library(patchwork)
+library(tidymodels)
+library(spBFA)
+library(yardstick)
+library(tidyverse)
+library(womblR)
+library(kableExtra)
+library(knitr)
+```
+
+```{r}
+#| label: generate-data
+source(file = "case3_convert_to_right_eye.R")
+
+Bryan2013 <- read_csv("~/instructor_data/LongGlaucVF_20150216/Bryan2013.csv")
+Erler2014 <- read_csv("~/instructor_data/LongGlaucVF_20150216/Erler2014.csv")
+Patients <- read_csv("~/instructor_data/LongGlaucVF_20150216/Patients.csv")
+VFPoints <- read_csv("~/instructor_data/LongGlaucVF_20150216/VFPoints.csv")
+VisualFields <- read_csv("~/instructor_data/LongGlaucVF_20150216/VisualFields.csv")
+
+dat_car <- dat
+
+dat <- dat %>% 
+  group_by(patient, location, eye) %>% 
+  mutate(visit = 1:n()) %>% 
+  ungroup()
+#adding variable incidating visit number
+```
+
+# Introduction
+
+Glaucoma, a group of eye diseases damaging the optic nerve, can lead to vision loss or irreversible blindness if left untreated (Quigley & Broman, 2006). It affects nearly 80 million people as of 2023 (Tham et al., 2014). The disease often progresses slowly, without noticeable symptoms, until irreversible vision loss occurs, making early detection and monitoring crucial for effective treatment (Kass et al., 2002).
+
+Patients routinely undergo visual field examinations to monitor glaucoma status, providing a functional assessment of vision across the field (Bengtsson & Heijl, 2005). These longitudinal series of visual fields are used by clinicians to determine disease progression rates. However, the data contains complex spatial and temporal dependencies that must be considered when determining progression.
+
+In this case study, we investigate early onset glaucoma patients in the dataset and predict glaucoma progression. We explore whether a spatial model, specifically an areal model, improves prediction over a non-spatial model, such as simple linear regression. Specifically, we look to train the models on the first 5 visual fields and see if the spatial or non-spatial model better predicts the future visual fields. This research question holds significant clinical importance as it can potentially enhance disease progression predictions, leading to improved treatment options and patient outcomes (Yousefi et al., 2015).
+
+We hypothesize that, among early onset glaucoma patients, spatial modeling using areal models will yield more accurate predictions of disease progression than non-spatial modeling approaches like simple linear regression.
+
+This is based on the spatial nature of visual field data in glaucoma patients, as the disease affects different visual field regions in distinct patterns. Areal models, a type of spatial model, account for spatial dependencies and topographical relationships between visual field regions, revealing insights about disease progression. On the other hand, non-spatial models do not consider these spatial relationships and may fail to capture essential patterns.
+
+In general, our results could improve clinical decision-making and care quality for this patient population.
+
+# Methodology
+
+## Data
+
+The dataset comes from the Rotterdam Ophthalmic Data Repository and contains longitudinal visual field data of 139 glaucoma patients, both eyes of each participant were included (Rotterdam Ophthalmic Institute, n.d.; Erler et al., 2014; Bryan et al., 2013). The patients were recruited from the Rotterdam Eye Hospital in the Netherlands, and informed consent was obtained from all subjects. The inclusion criteria for the study required the patients to be between 18 and 85 years old, have a glaucoma diagnosis, and have reproducible visual field defects on at least one occasion. Patients with certain secondary glaucomas and other eye diseases were excluded from the study.
+
+At each visit, standard clinical ophthalmic examinations were performed, including visual acuity, intra-ocular pressure, gonioscopy, and ophthalmoscopy. Additionally, standard automated perimetry was performed at each visit. Visual fields were acquired on a Humphrey Visual Field Analyzer with a standard white-on-white 24-2 field with the full threshold program. The dataset includes information on the visual field and on the individual visual field test locations, as well as the patient's gender, age at visit, intraocular pressure, and mean deviation.
+
+## Data Wrangling
+
+First, we split the data for each patient into right and left eyes and process each separately. At the end, we convert each left eye to the corresponding right eye and combine the processed data of both eyes.
+
+We reduce our data to only the variables we are interested in analyzing: patient number, which eye is observed, location in the visual field, visit number (or visual field number), mean deviation (how bad their vision is over all the locations on the visual field), and differential light sensitivity (our response). We also create a new ID variable to uniquely identify each patient-eye combination.
+
+We then calculate the age of each patient at the time of each visit. As per our EDA, we wanted to specifically investigate early-onset glaucoma patients, which are defined to be less than 40. However, in order to be more inclusive of people in the margins of that classification, we filtered our dataset for those under the age of 45, which is helpful to create a more robust sampling process.
+
+## Exploratory Data Analysis
+
+Prior to diving into more analysis, we wanted to have an understanding of what the overall distribution of mean deviations looked like for all of our patients.
+
+```{r}
+#| fig-height: 2.5
+#| fig-align: center
+
+VisualFields |>
+  ggplot(
+    aes(x = MD
+  )) + 
+  geom_density() + 
+  labs(title = "Distribution of Mean Deviation for All Patients",
+       x  = "Mean Deviation from 'Normal' Vision",
+       y = "") + 
+  theme_minimal() + 
+  theme(axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+```
+
+From the graph above, we see that there is a high amount of density concentrated just to the left of 0, which represents points in patients' visual fields that are nearly 'normal. We then see a relatively steady decline towards -30, showing that we have fewer observations in our data for worse and worse vision. This intuitively makes sense as this is taking the mean deviation, so having a mean deviation of -30, for instance, would basically imply nearly full loss of vision.
+
+As we were interested to investigate early-onset Glaucoma we wanted to see if there was a difference in progression for those who got Glaucoma earlier in their life to those who got it when they were older. Despite, the literature typically setting the cutoff for early onset Glaucoma at 40 we decided to increase this to 45 to capture more data. We thus plot out all of the mean deviations for each patient's visits against time.
+
+```{r}
+#| layout-ncol: 2
+
+VisualFields_EDA <- dat |>
+  group_by(id) |>
+  mutate(min_age = min(years)) |>
+  mutate(early = if_else(min_age <= 45, "Young", "Old"))
+
+VisualFields_EDA_young <- VisualFields_EDA |>
+  filter(early == "Young") |>
+  group_by(id) |>
+  summarise(slope = (min(md) - max(md))/(max(time) - min(time)),
+            early = "Young")
+
+
+VisualFields_EDA_old <- VisualFields_EDA |>
+  filter(early == "Old") |>
+  group_by(id) |>
+  summarise(slope = (min(md) - max(md))/(max(time) - min(time)),
+            early = "Old")
+
+
+VisualFields_EDA_all <- VisualFields_EDA_old |>
+  rbind(VisualFields_EDA_young) 
+  
+
+final_visfield_EDA <- VisualFields_EDA_all |>
+  group_by(early) |>
+  summarise(slope = mean(slope)) 
+
+final_visfield_EDA |>
+  ggplot(aes(
+    x = early,
+    y = slope)) + 
+  geom_col() + 
+  theme_minimal() + 
+  labs(title = "Average slope for those Getting Glaucoma at a Old vs. Young Age",
+       subtitle = "Young defined as getting Glaucoma prior to Age 45",
+       y = "Average Mean Deviation Slope\nBetween All Eyes for Each Category",
+       x = "")
+
+
+```
+
+This graph looks at the average slope for patients who got Glaucoma young (under age 45) vs. those who got it at an older age. First we calculate the slope for each patients mean deviation which is just the average deviation from what would be considered normal at that age across all locations in each patient's visual field. Then we aggregate it within each age group to find the average slope. We can see that those who got Glaucoma younger have a less steep negative slope (-0.50 vs -0.58), implying that on average their vision is declining at a slower pace compared to those who got it at an older age. This justifies focusing our modeling on those who got Glaucoma at a younger age (45 or under) as their vision looks to progress differently on average.
+
+```{r}
+#| eval: false
+
+VisualFields_EDA_young |>
+  ggplot(
+    aes(x = time,
+        y = md)) + 
+  geom_point(alpha = .01, color = "green") + 
+  geom_smooth(method = "lm") + 
+  annotate("text",x=4,y=5,size = 3, label=(paste0("slope=",round(coef(lm(VisualFields_EDA_young$md~VisualFields_EDA_young$time))[2],3)))) + 
+  labs(title = "Mean Deviation for Younger Patients Over Time",
+     subtitle = "Patients Who Got Glaucoma Before Age 46",
+     y = "Mean Visual Deviation\nAcross Points",
+     x = "Years") + 
+  theme_minimal()
+
+
+VisualFields_EDA_old |>
+  ggplot(
+    aes(x = time,
+        y = md)) + 
+  geom_point(alpha = .01) + 
+  geom_smooth(method = "lm") + 
+  annotate("text",x=4,y=5,size = 3, label=(paste0("slope=",round(coef(lm(VisualFields_EDA_old$md~VisualFields_EDA_old$time))[2],3)))) + 
+labs(title = "Mean Deviation for Older Patients Over Time",
+     subtitle = "Patients Who Got Glaucoma After Age 45",
+     y = "Mean Visual Deviation\nAcross Points",
+     x = "Years") + 
+theme_minimal()
+
+```
+
+After deciding to subset our data and only look at those who got Glaucoma when they were 45 years old or younger, we wanted to see how each location's differential light sensitivity progressed over time for one of these younger eyes.
+
+```{r}
+#| fig.width = 8
+
+Patient4_eye_OD <- dat |>
+  filter(id == 7)
+
+PlotVfTimeSeries(Y = Patient4_eye_OD$dls,
+                 Location = Patient4_eye_OD$location,
+                 Time = Patient4_eye_OD$time,
+                 main = "Visual field sensitivity time series\nat each location for right eye of patient 4",
+                 xlab = "Days from baseline visit",
+                 ylab = "Differential light\nsensitivity (dB)",
+                 line.reg = FALSE)
+
+```
+
+Above, we see how vision at each visual location has progressed over time for patient 4's right eye. We see many locations that hold relatively steady, with a few locations having much higher volatility. We will not dive deep into this one patient's visual field, but we believe it is helpful to visualize this data in this way to help demonstrate the spatial and temporal elements of the data set, along with the variety of vision across locations in the visual field.
+
+# Modeling
+
+As per our EDA, we wanted to specifically investigate early-onset glaucoma patients. Thus, we filtered our dataset for those under the age of 45.
+
+## Model Assumptions
+
+When it comes to models related to spatial statistics, the foundational assumption is that dependence between observations decreases as distance between locations increase. Basing this foundational assumption in the context of the nature of glaucoma's impact on visual fields, it is observed that the impact of glaucoma tends to be less correlated as the distance between visual field l locations increase(Swanson et al., 2004).
+
+## Pointwise linear regression model
+
+First, we create our training and test datasets. Our training dataset is formed by the data from the first five observed visual fields (i.e. from the first five visits) of each patient. The test dataset is reflected as all future data (i.e. all other visual fields or visits).
+
+We perform Pointwise Linear Regression on the training data, where the dependent variable is differential light sensitivity (DLS). We fit the linear regression model using time as the independent variable. We fit this linear regression model in each of the 52 non-blind spots in the visual field.
+
+Our model is written out below:
+
+$$ 
+\hat{\textrm{dls}} = \beta_0 + \beta_1\textrm{time} 
+$$
+
+```{r}
+dat <- dat %>%
+  group_by(patient) %>%
+  mutate(min_age = min(years)) %>%
+  filter(min_age <= 45)
+```
+
+```{r}
+#| output: false
+#Pointwise Linear Regression
+set.seed(123)
+
+
+train_data <- dat %>% 
+  group_by(patient) %>% 
+  filter(visit <= 5)
+
+test_data <- dat %>% 
+  group_by(patient) %>% 
+  filter(visit > 5)
+###############################
+#dat_fit <- lm(dls ~ (eye+age+sex+iop+md+td+time+region+degree)*location , data = train_data)
+#summary(dat_fit)
+#should we add interaction effects? think about what make sense + selection
+#procedure
+
+#predicted_data = predict(dat_fit, newdata = test_data)
+#r.squared = 0.9735
+
+```
+
+```{r}
+#| label: fitting a separate model for each location
+#| output: false
+models <- train_data %>%
+  group_by(location, patient,eye) %>%
+  do(model = lm(dls ~ time, data = .))
+#fitting models for each location
+
+#collecting predictions for first model 
+location_x <- filter(test_data, location == 1) %>% 
+    ungroup()
+
+model <- models$model[[1]]
+
+location_x <- location_x %>% 
+  mutate(predict_dls = predict(model, newdata = location_x))
+
+results_sep <- location_x
+
+#collecting predictions for all models
+for(x in 2:54){
+  location_x <- filter(test_data, location == x) %>% 
+    ungroup()
+  model <- models$model[[x]]
+  location_x <- location_x %>% 
+    mutate(predict_dls = predict(model, newdata = location_x))
+  
+  results_sep <- add_row(results_sep, location_x)
+}
+```
+
+```{r}
+#| output: false
+results_visit <- results_sep %>% 
+  group_by(visit) %>%
+  summarize(rmse_visit = rmse_vec(predict_dls, dls))
+```
+
+```{r}
+#| output: false
+pred_4 <- read.csv("ppd_meanfit_OD_4.csv", sep="\t")
+
+pred_4 <- pred_4 %>%
+  mutate(location=seq(1,52))
+
+pred_4_long <- pred_4 %>%
+  gather(key = "visit", value = "value", -location) %>%
+  mutate(visit = gsub("V", "", visit),
+         visit = as.numeric(visit) + 4)
+
+# Reorder columns
+pred_4_long <- pred_4_long[, c("location", "visit", "value")]
+colnames(pred_4_long) <- c("location", "visit", "pred_spatial")
+
+```
+
+```{r}
+#| output: false
+results_sep_4 <- results_sep %>%
+  filter(patient==4)
+```
+
+```{r}
+results_patient <- results_sep %>%
+  group_by(patient, eye) %>%
+  summarize(rmse_patient=rmse_vec(predict_dls, dls))
+```
+
+## Spatial Modeling with CAR Models
+
+When it comes to spatial modeling, we first format the data for analysis. For instance, we convert the raw time into years, remove blind spot locations based on the natural blind spot, and define the adjacency matrix to help determine connections. We then define the stan object based on our data, by choosing to train the model on the first 5 visual fields and then use the other visual fields for predictions. After these stan models are defined and compiled, we sample from the model using the default of 2000 iterations with 4 chains running in parallel. An important caveat to note is that while most models have reached convergence, some are not able to. We find improvements in mixing when increasing the iterations, which is important to note and an opportunity for future work. After this determination of convergence, it's important to make predictions of future visual fields by using the posterior predictive distribution. After these predictions are made, we calculate the RMSE values for heterogeneity by aggregating for time, location, as well as eye and patient. With these different aggregations we create 3 different plots to then compare to the non-spatial model's performance.
+
+```{r}
+#| eval: false
+library(rstan)
+library(loo)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+blind_spot <- c(26, 35) # define blind spot
+dat_car <- dat_car[!dat_car$location %in% blind_spot, ] # remove blind spot locations
+dat_car$LocationNew <- as.numeric(as.factor(dat_car$location)) # reorder locations to be ordered integers
+dat_car <- dat_car %>%
+  group_by(patient) %>%
+  mutate(visit = match(time, unique(time)))
+data = dat_car %>%
+  filter(patient == 3 , eye == "OD")
+time <- unique(data$time)
+T <- length(unique(data$visit))
+W <- HFAII_Queen[-blind_spot, -blind_spot] # visual field adjacency matrix
+T_train <- 5
+dataTrain <- data[data$visit <= T_train, ]
+n <- length(unique(dataTrain$location))
+stan_data <- list(
+  y = dataTrain$dls,
+  x = dataTrain$time,
+  s = dataTrain$LocationNew,
+  N = n * T_train,
+  n = n,
+  T = n,
+  W = W
+)
+iter = 4000
+n_iter = iter/100 
+model_compiled <- stan_model("spatial.stan")
+fit <- sampling(model_compiled, data = stan_data, chains = 1, iter = iter,
+                refresh = n_iter)
+saveRDS(fit, file = "fit_three_right.rds") # an option for saving the stan model fit
+
+```
+
+# Results
+
+```{r}
+patients <- c("4", "12", "30", "34", "43", "72", "76", "90", "125", "128", "130")
+
+# all_pred is for spatial model predictions
+all_pred <- data.frame(patient = integer(),
+                       eye = character(),
+                       location = integer(),
+                       visit = integer(),
+                       pred = numeric())
+for(patient in patients) {
+  for(which_eye in c("OD", "OS")) {
+    patientInt <- as.integer(patient)
+    dat_filter <- dat %>%
+      filter(patient==patientInt & eye==which_eye & visit > 5 & location != 26 & location != 35) %>%
+      select(location, visit, dls, eye)
+    
+    pred <- read.csv(paste0("patient_predictions/ppd_pred_",which_eye,"_", patient, ".csv"), sep="\t")
+    
+    pred <- pred %>%
+    mutate(location=seq(1,52))
+  
+    pred_long <- pred %>%
+      gather(key = "visit", value = "value", -location) %>%
+      mutate(visit = gsub("V", "", visit),
+             visit = as.numeric(visit) + 4)
+    pred_long <- pred_long[, c("location", "visit", "value")]
+    colnames(pred_long) <- c("location", "visit", "pred_spatial")
+    pred_long <- pred_long %>%
+      filter(visit > 5 & visit <= max(dat_filter$visit))
+    pred_long <- pred_long %>% 
+      mutate(
+        location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+      )
+    
+    all_pred <- rbind(all_pred, data.frame(patient=as.integer(patient), eye=which_eye, location=as.integer(pred_long$location), visit=as.integer(pred_long$visit), pred=pred_long$pred_spatial))
+  }
+}
+```
+
+```{r}
+dat_filter <- dat %>%
+  filter(visit > 5 & location != 26 & location != 35)
+
+spatial_rmse <- rmse_vec(all_pred$pred, dat_filter$dls) # Final RMSE = 14.52834
+```
+
+```{r}
+pred_actual <- dat_filter %>%
+  ungroup() %>%
+  select(patient, eye, location, visit, dls) %>%
+  left_join(all_pred, by = c("patient", "eye", "location", "visit"))
+```
+
+```{r}
+patients <- c("4", "12", "30", "34", "43", "72", "76", "90", "125", "128", "130")
+spatial_rmse_patient <- data.frame(patient = integer(),
+                           eye = character(),
+                           rmse_patient = numeric(),
+                           stringsAsFactors = FALSE)
+for(patient in patients) {
+  for(which_eye in c("OD", "OS")) {
+    patientInt <- as.integer(patient)
+    dat_filter <- dat %>%
+      filter(patient==patientInt & eye==which_eye & visit > 5 & location != 26 & location != 35) %>%
+      select(location, visit, dls, eye)
+    
+    pred <- read.csv(paste0("patient_predictions/ppd_pred_",which_eye,"_", patient, ".csv"), sep="\t")
+    
+    pred <- pred %>%
+    mutate(location=seq(1,52))
+  
+    pred_long <- pred %>%
+      gather(key = "visit", value = "value", -location) %>%
+      mutate(visit = gsub("V", "", visit),
+             visit = as.numeric(visit) + 4)
+    pred_long <- pred_long[, c("location", "visit", "value")]
+    colnames(pred_long) <- c("location", "visit", "pred_spatial")
+    pred_long <- pred_long %>%
+      filter(visit > 5 & visit <= max(dat_filter$visit))
+    pred_long <- pred_long %>% 
+      mutate(
+        location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+      )
+    
+    
+    rmse_val <- rmse_vec(pred_long$pred_spatial, dat_filter$dls)
+    
+    spatial_rmse_patient <- rbind(spatial_rmse_patient, data.frame(patient=as.integer(patient), eye=which_eye, rmse_patient=rmse_val, stringsAsFactors = FALSE))
+  }
+}
+```
+
+To begin with, we calculate the total RMSEs for each model. The spatial model records an out of sample RMSE **14.53**, which is nearly double that of the out of sample RMSE for the non-spatial model of **20.6**. This supports our hypothesis that the spatial model would better predict future visual fields compared to the non-spatial model. We decide to dive deeper into the results and look at how the RMSEs compare across each eye, visit number (proxy for time), and location.
+
+```{r}
+results_patient$source <- "rmse_patient"
+spatial_rmse_patient$source <- "spatial_rmse_patient"
+combined_data <- rbind(results_patient, spatial_rmse_patient)
+ggplot(combined_data, aes(x = interaction(patient, eye), y = rmse_patient, fill = source)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.6, color = "black") +
+  labs(title = "RMSE by Patient-Eye Combination", x = "Patient-Eye", y = "RMSE") +
+  scale_fill_manual(values = c("#0072B2", "red")) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 18, face = "bold", margin = margin(b = 10)),
+        axis.title = element_text(size = 14, margin = margin(t = 10)),
+        axis.text = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
+        legend.position = "bottom")
+```
+
+To compare the spatial and non-spatial models across patients, we look at each patient's total RMSE for each of their eyes. The spatial model has a lower RMSE for 19 of the 22 eyes. For the majority of the eyes, this supports the hypothesisthat the spatial model would do a better job at predicting future visual fields after being trained on the first 5.
+
+Next, we look at how each model predicts across different visits into the future to see if one is better in the short-term or the long-term.
+
+```{r}
+spatial_results_visit <- pred_actual %>%
+  group_by(visit) %>%
+  summarize(rmse_visit=rmse_vec(dls, pred))
+
+results_visit <- results_sep %>% 
+  group_by(visit) %>%
+  summarize(rmse_visit = rmse_vec(predict_dls, dls))
+
+results_visit$source <- "non_spatial"
+spatial_results_visit$source <- "spatial"
+combined_visit <- rbind(results_visit, spatial_results_visit)
+ggplot(data = combined_visit, aes(x = visit, y = rmse_visit, color = source)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3, shape = 21, fill = "#FFFFFF") +
+  labs(
+    title = "RMSE by Visit",
+    x = "Visit",
+    y = "RMSE"
+  ) +
+  scale_color_manual(values = c("non_spatial" = "#0072B2", "spatial" = "red")) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 20),
+    axis.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "#D3D3D3"),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+We see that again the spatial model performs better than the spatial model, with a lower RMSE calculated across all eyes for every visit number. This shows that both immediately after our training period and far into the future, the spatial model looks to outperform our non-spatial model. Notably, both models' RMSEs increase through time (visits), which makes sense as it is likely harder to predict far into the future compared to the very next visit.
+
+Finally, we want to see how each model predicted across different points in the visual field.
+
+```{r}
+#| label: model_eval 
+#| fig-height: 5
+#| layout-ncol: 2
+
+#to calculate heterogeneity, find RMSE for each location
+rmse_sep_models <- results_sep %>% 
+  group_by(location) %>% 
+  yardstick::rmse(predict_dls,dls) %>% 
+  pull(.estimate) 
+
+rmse_sep_models <- rmse_sep_models[!(seq(1:54) %in% c(26,35))]
+
+rmse_spatial <- pred_actual %>%
+  group_by(location) %>%
+  summarize(rmse=rmse_vec(dls, pred))
+
+rmse_spatial <- rmse_spatial$rmse
+
+PlotSensitivity(Y = rmse_sep_models,
+                main = "RMSE for DLS using PWLR",
+                legend.lab = "RMSE for DLS", legend.round = 1, zlim = c(5,25))
+
+PlotSensitivity(Y = rmse_spatial,
+                main = "RMSE for DLS using Spatial Model",
+                legend.lab = "RMSE for DLS", legend.round = 1, zlim = c(5,25))
+```
+
+```{r}
+#| label: model_eval_regions
+#| layout-ncol: 2
+
+
+rmse_spatial <- data.frame(rmse_spatial) 
+rmse_spatial$index <- 1:nrow(rmse_spatial)
+
+rmse_spatial_box <- rmse_spatial |>
+  mutate(region = case_when(
+  index %in% c(1:5, 9, 10, 17) ~ "inferior nasal",
+  index %in% c(6:8, 11:16, 19:22) ~ "inferior temporal",
+  index %in% c(23:25, 32:34) ~ "temporal",
+  index %in% c(29:31, 38:42, 47:48) ~ "superiror temporal",
+  index %in% c(28, 37, 43, 45:46, 49:54) ~ "superior nasal",
+  index %in% c(18, 27, 36, 44) ~ "nasal"))
+
+
+
+rmse_sep_models <- data.frame(rmse_sep_models) 
+rmse_sep_models$index <- 1:nrow(rmse_sep_models)
+
+rmse_sep_models_box <- rmse_sep_models |>
+  mutate(region = case_when(
+  index %in% c(1:5, 9, 10, 17) ~ "inferior nasal",
+  index %in% c(6:8, 11:16, 19:22) ~ "inferior temporal",
+  index %in% c(23:25, 32:34) ~ "temporal",
+  index %in% c(29:31, 38:42, 47:48) ~ "superiror temporal",
+  index %in% c(28, 37, 43, 45:46, 49:54) ~ "superior nasal",
+  index %in% c(18, 27, 36, 44) ~ "nasal"))
+
+rmse_sep_models_box |>
+  filter(!is.na(region)) |>
+  ggplot(
+    aes(x = region,
+        y = rmse_sep_models)
+  ) + 
+  geom_boxplot() + 
+  ylim(5,40) + 
+  theme_minimal() + 
+  labs(title = "Boxplots for Average RMSE for\neach region for non-spatial model",
+       y = "Average MSEs between eyes",
+       x = "Region of the Eye"
+       ) + 
+  theme(axis.text.x = element_text(angle = 70, vjust = 0.4))
+
+rmse_spatial_box |>
+  filter(!is.na(region)) |>
+  ggplot(
+    aes(x = region,
+        y = rmse_spatial)
+  ) + 
+  geom_boxplot() + 
+  ylim(5,40) + 
+  theme_minimal() + 
+  labs(title = "Boxplots for Average RMSE for\neach region for Spatial model",
+       y = "Average MSEs between eyes",
+       x = "Region of the Eye"
+       ) + 
+  theme(axis.text.x = element_text(angle = 70, vjust = 0.4))
+
+
+
+```
+
+First, we can tell that in general the RMSEs for the spatial model is lower than that of the non-spatial model. From, the box plot, we can look at each specific region and see the heterogeity in prediction performance across locations for each model. The box plot shows we see some significant differences in prediction accuracies across regions. For example, the non-spatial model looks to do a relatively poor job of predicting in the nasal region compared to the other regions as it has the highest median of any of the average RMSEs for regions. On the other hand, the spatial model does an impressive job at predicting in the nasal region with no locations in the nasal region having a higher average RMSE then 14, compared to other regions in the spatial model with median RMSE values above 14 (temporal and inferior temporal). We have decided to plot them on the same y-axis scale to be able to easily compare RMSEs across locations and models. Overall, it is clear there is significant heterogeneity in prediction performance across locations for both models, with some locations (not regions) having RMSEs of nearly double that of other locations in the same model. Looking to improve the locations and more broadly the regions that the model is predicting relatively poorly on could be an avenue for further research.
+
+## Sensitivity Analysis
+
+To sensitize our results, we look to experiment with different choices of our prior distribution on rho in our spatial model. In our normal spatial model, rho takes a non-informative uniform prior. We ran a sensitivity analyse, with the prior for rho being a beta (5, 1) distribution. The beta(5, 1) distribution favors higher values of rho which increase the correlation between areas in our spatial model. Due to computation constraints, we run this sensitivity analysis on 1 change in rho with the Beta(5,1) distribution and compare the RMSEs from these models to our non-spatial and original spatial models.
+
+```{r results='hide'}
+sen_df <- data.frame(model = character(),
+                     eye = character(),
+                     rmse = numeric())
+
+for(which_eye in c("os", "od")) {
+  dat_filter <- dat %>%
+    filter(patient==4 & eye==toupper(which_eye) & visit > 5 & location != 26 & location != 35) %>%
+    select(location, visit, dls)
+  
+  # two diff beta priors
+  for(beta_prior in c("1_5", "5_1")) {
+    
+    pred <- read.csv(paste0("patient_predictions/ppd_", beta_prior, "_",which_eye,"_4.csv"), sep="\t")
+    pred <- pred %>%
+      mutate(location=seq(1,52))
+    
+    pred_long <- pred %>%
+      gather(key = "visit", value = "value", -location) %>%
+      mutate(visit = gsub("V", "", visit),
+             visit = as.numeric(visit) + 4)
+    pred_long <- pred_long[, c("location", "visit", "value")]
+    colnames(pred_long) <- c("location", "visit", "pred_spatial")
+    pred_long <- pred_long %>%
+      filter(visit > 5 & visit <= max(dat_filter$visit))
+    pred_long <- pred_long %>% 
+      mutate(
+        location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+      )
+    curr_rmse <- rmse_vec(pred_long$pred_spatial, dat_filter$dls)
+    sen_df <- rbind(sen_df, data.frame(eye=which_eye, model=beta_prior, rmse=curr_rmse))
+  }
+  
+  #nonspatial
+  results_sep_filter <- results_sep %>%
+    filter(patient==4 & eye==toupper(which_eye) & visit > 5 & location != 26 & location != 35)
+  curr_rmse <- rmse_vec(results_sep_filter$dls, results_sep_filter$predict_dls)
+  sen_df <- rbind(sen_df, data.frame(eye=which_eye, model="nonspatial", rmse=curr_rmse))
+  
+  #initial spatial (uniform prior)
+  
+  pred <- read.csv(paste0("patient_predictions/ppd_pred_",toupper(which_eye),"_4.csv"), sep="\t")
+  
+  pred <- pred %>%
+    mutate(location=seq(1,52))
+
+  pred_long <- pred %>%
+    gather(key = "visit", value = "value", -location) %>%
+    mutate(visit = gsub("V", "", visit),
+           visit = as.numeric(visit) + 4)
+  pred_long <- pred_long[, c("location", "visit", "value")]
+  colnames(pred_long) <- c("location", "visit", "pred_spatial")
+  pred_long <- pred_long %>%
+    filter(visit > 5 & visit <= max(dat_filter$visit))
+  pred_long <- pred_long %>% 
+    mutate(
+      location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+    )
+  
+  curr_rmse <- rmse_vec(pred_long$pred_spatial, dat_filter$dls)
+  
+  sen_df <- rbind(sen_df, data.frame(eye=which_eye, model="spatial", rmse=curr_rmse))  
+}
+
+
+
+```
+
+```{r results='hide'}
+sen <- sen_df %>%
+  pivot_wider(names_from = model, values_from = rmse) %>%
+  select(eye, `1_5`, `5_1`, spatial, nonspatial)
+
+temp_df <- sen %>%
+  select(eye, `1_5`, `5_1`) %>%
+  mutate(eye = if_else(eye == "os", "od", "os"))
+
+sen %>%
+  left_join(temp_df, by = "eye", suffix = c("", "_swap")) %>%
+  mutate(`Spatial with Beta(1,5)` = `5_1_swap`,
+         `Spatial with Beta(5,1)` = `1_5_swap`,
+         `Spatial with Unif(0,1)` = spatial) %>%
+  select(eye, `Spatial with Beta(1,5)`, `Spatial with Beta(5,1)`, `Spatial with Unif(0,1)`, nonspatial) %>%
+  kable("latex", booktabs = TRUE, longtable = TRUE, linesep = "", caption = "RMSEs for Patient 4\nBy Model Type") %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+
+
+```
+
+```{r}
+sense <- read_csv("sense_lysis - Sheet1 (3).csv")
+
+sense %>%
+  kable()
+```
+
+From the chart above, We see that this sensitivity shows that changing the priors does make some difference in the RMSE of the spatial model, although, in both eyes, the differences increase or decrease roughly the same amount when comparing the uniform spatial model with the altered spatial model as the spatial model with Beta(5,1) having a lower RMSE for 8 of the models. As such it, it would be helpful to perform further sensitivity analysis by making more changes to the priors. Ultimately, this helps to show that the model is not highly affected by what prior parameters are picked.
+
+# Discussion
+
+## Major Takeaways
+
+In sum, from the data we used, we have found that the spatial model outperformed our non-spatial model in the vast majority of circumstances for predicting future visual fields in patients who got Glaucoma at or under age 45. We found a total RMSE for our non-spatial model of **20.6** compared to an RMSE of **14.53** for our spatial model. Additionally, judging from RMSE, the spatial model performed better across all lengths of time and locations and nearly all patients. This is supportive of our initial hypothesis as there are certainly spatial factors that go into visual fields, and thus we would expect adding a spatial element to the model to improve it. It is worth noting the spatial models may still be performing not optimally due to the lack of convergence. We ran our models for 5,000 iterations and found issues with convergence. We tested convergence for one model by running 50,000 iterations and saw significant improvement, which could be informative of our future work.
+
+## Limitations and Future Work
+
+Although our analysis provides a strong starting point for using spatial modeling to predict future visual fields for patients who got Glaucoma under 45 years old, there are some limitations to note. First and foremost, the lack of convergence of our spatial models is troublesome and likely taints our results. With additional computing power allowing us to run all of our models for 50,000 iterations or more would likely improve convergence and performance. Next, we do not have any additional information on patients' health, so we are assuming the deterioration in vision we see is from their Glaucoma although there could be confounding health factors such as blood pressure or BMI. Additionally, we are not certain these patients have not sustained injuries that could have additionally impacted their vision. Similarly, we are assuming each patient's eye is independent from one another which is largely supported by typical practices in Glaucoma, but neglects to account for genetic factors. One path for future research would be to create a model that includes these additional health factors and explores relationships between the eyes of each patient. Additional research could also be done on subsetting patients strictly under 40 in order to align with the typical definition of early-onset Glaucoma with larger amounts of data.
+
+# Appendix
+
+## References
+
+Bengtsson, B., & Heijl, A. (2005). A visual field index for calculation of glaucoma rate of progression. American Journal of Ophthalmology, 140(4), 710-716. \newline \newline N.S. Erler, S.R. Bryan, P.H.C. Eilers, E.M.E.H Lesaffre, H.G. Lemij and K.A. Vermeer. Optimizing structure-function relationship by maximizing correspondence between glaucomatous visual fields and mathematical retinal nerve fiber models. Invest Ophthalmol Vis Sci. 2014;55(4):2350-2357. https://iovs.arvojournals.org/article.aspx?articleid=2189935 \newline \newline S.R. Bryan, K.A. Vermeer, P.H.C. Eilers, H.G. Lemij and E.M.E.H. Lesaffre. Robust and Censored Modeling and Prediction of Progression in Glaucomatous Visual Fields. Invest Ophthalmol Vis Sci. 2013;54(10):6694-6670. http://dx.doi.org/10.1167/iovs.12-11185 \newline \newline Kass, M. A., Heuer, D. K., Higginbotham, E. J., Johnson, C. A., Keltner, J. L., Miller, J. P., ... & Gordon, M. O. (2002). The Ocular Hypertension Treatment Study: a randomized trial determines that topical ocular hypotensive medication delays or prevents the onset of primary open-angle glaucoma. Archives of Ophthalmology, 120(6), 701-713. \newline \newline Quigley, H. A., & Broman, A. T. (2006). The number of people with glaucoma worldwide in 2010 and 2020. British Journal of Ophthalmology, 90(3), 262-267. \newline \newline Tham, Y. C., Li, X., Wong, T. Y., Quigley, H. A., Aung, T., & Cheng, C. Y. (2014). Global prevalence of glaucoma and projections of glaucoma burden through 2040: a systematic review and meta-analysis. Ophthalmology, 121(11), 2081-2090. \newline \newline Yousefi, S., Goldbaum, M. H., Balasubramanian, M., Jung, T. P., Weinreb, R. N., & Medeiros, F. A. (2015). Glaucoma progression detection using structural retinal nerve fiber layer measurements and functional visual field points. IEEE Transactions on Biomedical Engineering, 62(4), 1143-1154.

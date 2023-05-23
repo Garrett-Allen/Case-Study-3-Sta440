@@ -1,0 +1,205 @@
+---
+title: "Rob.qmd"
+format: html
+editor: visual
+---
+
+## EDA
+
+Taken from main doc
+
+```{r}
+packages <- c('tidyverse', 'spBFA','womblR', 'patchwork', 'tidymodels')
+install.packages(setdiff(packages, rownames(installed.packages())))
+library(patchwork)
+library(tidymodels)
+library(spBFA)
+library(tidyverse)
+```
+
+```{r}
+#| label: generate-data
+source(file = "case3_convert_to_right_eye.R")
+```
+
+```{r}
+Bryan2013 <- read_csv("~/Downloads/case3-team06/glaucoma_data/Bryan2013.csv")
+Erler2014 <- read_csv("~/Downloads/case3-team06/glaucoma_data/Erler2014.csv")
+Patients <- read_csv("~/Downloads/case3-team06/glaucoma_data/Patients.csv")
+VFPoints <- read_csv("~/Downloads/case3-team06/glaucoma_data/VFPoints.csv")
+VisualFields <- read_csv("~/Downloads/case3-team06/glaucoma_data/VisualFields.csv")
+
+```
+
+# Methodology
+
+Describe methods in sufficient detail for replication.
+
+## Exploratory data analysis
+
+EDA is important!
+
+```{r}
+Patients %>%
+  group_by(SEX) %>%
+  summarize(n.sex=n())
+```
+
+```{r}
+plot1 <- ggplot(dat, aes(x = log(dls))) +
+  geom_histogram(binwidth = .01)
+plot2 <- ggplot(dat, aes(x = iop)) +
+  geom_histogram(binwidth = 1)
+plot1 + plot2
+```
+
+```{r}
+blind_spot <- c(26, 35) # define blind spot
+W <- HFAII_Queen[-blind_spot, -blind_spot] # HFA-II visual field adjacency matrix
+library(igraph)
+adj.graph <- graph.adjacency(W, mode = "undirected") 
+plot(adj.graph)
+```
+
+New EDA
+
+```{r}
+#| label: exploring age through EDA
+
+vf_od |>
+  ggplot(
+    aes(x = AGE, 
+        y = TOTAL_DEVIATION,
+        color = SEX)
+  ) + 
+  geom_point(alpha = .01)
+
+#males are blue, females red
+```
+
+Any Change between age looks just to be that we have older females in study. Otherwise there is a very clear delineation between a lot of deviation and not much at all with minimal density in the middle. No crazy correlation with age. Bi-modal density for deviation shown below.
+
+```{r}
+#| deviation density
+VisualFields |>
+  ggplot(
+    aes(x = MD
+  )) + 
+  geom_density() + 
+  labs(title = "Distribution of Mean Deviation for All Patients",
+       x  = "Mean Deviation from 'Normal' Vision",
+       y = "") + 
+  theme_minimal() + 
+  theme(axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+```
+
+
+```{r}
+library(womblR)
+
+Patient4_eye_OD <- dat |>
+  filter(id == 7)
+
+PlotVfTimeSeries(Y = Patient4_eye_OD$dls,
+                 Location = Patient4_eye_OD$location,
+                 Time = Patient4_eye_OD$time,
+                 main = "Visual field sensitivity time series \n at each location for right eye of patient 4",
+                 xlab = "Days from baseline visit",
+                 ylab = "Differential light sensitivity (dB)",
+                 line.reg = FALSE)
+
+```
+
+
+
+
+```{r}
+#| deviation by region
+
+
+vf_od |>
+  group_by(Location) |>
+  summarise(mean_dev = mean(TOTAL_DEVIATION)) |>
+    ggplot(
+      aes(x = Location, 
+        y = -mean_dev)) + 
+    geom_col()
+```
+
+Looks to be a stairstep pattern which may be interesting to dig into further.
+
+```{r}
+#| deviation by region
+
+
+vf_od |>
+  group_by(Location) |>
+  summarise(mean_dev = mean(TOTAL_DEVIATION)) |>
+    ggplot(
+      aes(x = Location, 
+        y = -mean_dev)) + 
+    geom_col()
+
+
+```
+
+```{r}
+VisualFields_EDA <- dat |>
+  mutate(early = if_else(id %in% c(3, 4, 12, 13, 27, 30, 34, 43, 46, 47, 61, 72, 76, 90, 98, 102, 114, 125, 126, 128), "Young", "Old"))
+                                 
+```
+
+```{r}
+VisualFields_EDA |>
+  ggplot(
+    aes(x = time,
+        y = md)) + 
+  geom_point(alpha = .01) + 
+  geom_smooth(method = "lm") + 
+  annotate("text",x=4,y=5,size = 3, label=(paste0("slope==",coef(lm(VisualFields_EDA$md~VisualFields_EDA$time))[2]))) +
+  facet_wrap(~ early) + 
+  theme_minimal()
+```
+
+```{r}
+#| layout-ncol: 2
+
+VisualFields_EDA_young <- VisualFields_EDA |>
+  filter(early == "Young")
+
+
+VisualFields_EDA_old <- VisualFields_EDA |>
+  filter(early == "Old")
+
+
+VisualFields_EDA_young |>
+  ggplot(
+    aes(x = time,
+        y = md)) + 
+  geom_point(alpha = .01, color = "lightgreen") + 
+  geom_smooth(method = "lm") + 
+  annotate("text",x=4,y=5,size = 3, label=(paste0("slope=",round(coef(lm(VisualFields_EDA_young$md~VisualFields_EDA_young$time))[2],3)))) + 
+  labs(title = "Mean Deviation for Younger Patients Over Time",
+     subtitle = "Patients Who Got Glaucoma Before Age 46",
+     y = "Mean Visual Deviation\nAcross Points",
+     x = "Years") + 
+  theme_minimal()
+
+
+VisualFields_EDA_old |>
+  ggplot(
+    aes(x = time,
+        y = md)) + 
+  geom_point(alpha = .001) + 
+  geom_smooth(method = "lm") + 
+  annotate("text",x=4,y=5,size = 3, label=(paste0("slope=",round(coef(lm(VisualFields_EDA_old$md~VisualFields_EDA_old$time))[2],3)))) + 
+labs(title = "Mean Deviation for Older Patients Over Time",
+     subtitle = "Patients Who Got Glaucoma After Age 45",
+     y = "Mean Visual Deviation\nAcross Points",
+     x = "Years") + 
+theme_minimal()
+
+```
+

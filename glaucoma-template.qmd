@@ -1,0 +1,564 @@
+---
+title: "Case 3 Report"
+subtitle: "Garrett Allen, Kartik Chamarti, Rob Wilds, Rami Sbahi"
+format: html
+editor: visual
+---
+
+```{r}
+#| label: install-packages
+#| message: false
+#| warning: false
+#| echo: false
+
+packages <- c('tidyverse', 'sf','womblR','tidymodels','spBFA', 'yardstick', 'ggplot2', 'dplyr')
+install.packages(setdiff(packages, rownames(installed.packages())))
+```
+
+```{r}
+#| label: load-packages
+#| message: false
+#| warning: false
+#| echo: false
+library(patchwork)
+library(tidymodels)
+library(spBFA)
+library(yardstick)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r}
+#| label: generate-data
+source(file = "case3_convert_to_right_eye.R")
+
+dat_car <- dat
+
+dat <- dat %>%
+  group_by(patient, location, eye) %>%
+  mutate(visit = 1:n()) %>%
+  ungroup()
+#adding variable indicating visit number
+```
+
+# Intro
+
+Glaucoma is a group of eye diseases that damage the optic nerve and can lead to vision loss or even blindness if left untreated. It is the leading cause of irreversible blindness worldwide, affecting nearly 80 million people as of 2023.
+
+The disease often progresses slowly and without noticeable symptoms until irreversible vision loss occurs. This is why early detection and monitoring of the disease is crucial for effective treatment.
+
+To monitor glaucoma status, patients are routinely administered visual field examinations, which provide a functional assessment of a patient's vision across the field of vision. These longitudinal series of visual fields are then used by glaucoma clinicians to determine rates of disease progression. However, this data contains complex spatial and temporal dependencies that must be accounted for when determining progression.
+
+In this case study, we will investigate those with early onset glaucoma in the dataset and predict their progression of glaucoma. We will explore whether a spatial model, namely an areal model, improves prediction over a non-spatial model, such as a simple linear regression model. This research question is of utmost importance in the clinical world as it can potentially improve the accuracy of disease progression predictions, ultimately leading to better treatment options and outcomes for patients.
+
+# Introduction
+
+Interest in looking at gender differences among early-onset glaucoma defined as people less than 40 years old.
+
+The data files are on the container already in the directory `instructor_data/LongGlaucVF_20150216`.
+
+```{r}
+# Bryan2013 <- read_csv("~/instructor_data/LongGlaucVF_20150216/Bryan2013.csv")
+# Erler2014 <- read_csv("~/instructor_data/LongGlaucVF_20150216/Erler2014.csv")
+# Patients <- read_csv("~/instructor_data/LongGlaucVF_20150216/Patients.csv")
+# VFPoints <- read_csv("~/instructor_data/LongGlaucVF_20150216/VFPoints.csv")
+# VisualFields <- read_csv("~/instructor_data/LongGlaucVF_20150216/VisualFields.csv")
+
+```
+
+# Methodology
+
+## Data
+
+The dataset contains longitudinal visual field data of 139 glaucoma patients, both eyes of each participant were included. The patients were recruited from the Rotterdam Eye Hospital in the Netherlands, and informed consent was obtained from all subjects. The inclusion criteria for the study required the patients to be between 18 and 85 years old, have a glaucoma diagnosis, and have reproducible visual field defects on at least one occasion. Patients with certain secondary glaucomas and other eye diseases were excluded from the study.
+
+At each visit, standard clinical ophthalmic examinations were performed, including visual acuity, intra-ocular pressure, gonioscopy, and ophthalmoscopy. Additionally, standard automated perimetry was performed at each visit. Visual fields were acquired on a Humphrey Visual Field Analyzer with a standard white-on-white 24-2 field with the full threshold program. The dataset includes information on the visual field and on the individual visual field test locations, as well as the patient's gender, age at visit, intraocular pressure, and mean deviation.
+
+## Data Wrangling
+
+First, we load our data, which is stored in three separate files: VFPoints.csv, VisualFields.csv, and Patients.csv. We combine the data from these files into a single dataframe using a join function. We then create a new variable XY by concatenating the X and Y coordinates.
+
+We split the data into right and left eyes and process each separately. For the right eye data, we sort the coordinates in ascending order and then assign a unique identifier to each point. We then join this identifier back to the data. We repeat the same process for the left eye data.
+
+We then combine the processed data of both eyes into a single dataframe, remove unnecessary columns, and sort the data by their visual field identifier and location.
+
+Next, we create a new dataframe which includes only the variables we are interested in analyzing. We join this dataframe with a new dataframe that includes information on the visual field region. We also create a new variable ID that uniquely identifies each patient-eye combination.
+
+We then compute the time since the first visit for each patient-eye combination. Finally, we calculate the number of years since the patient's birth (i.e. their age) and add this to the dataframe.
+
+We put all of this into a new dataframe that includes all of the variables we want to analyze, using more descriptive variable names. The final dataframe includes:
+
+-   ID: unique identifier for patient-eye combination.
+-   patient: Number from 1 to \_ indicating the number of the patient.
+-   eye: Indicating OD for right eye or OS for left eye.
+-   age: the patient's age (days)
+-   sex: the patient's sex
+-   iop: intraoccular pressure (mmHg)
+-   md: mean deviation (dB)
+-   location: the number of the location on the visual field
+-   dls: differential light sensitivity
+-   td: Total deviation value (dB)
+-   time: ?
+-   region: the region of the eye
+-   degree: ?
+-   years: the patient's age (years)
+
+As per our EDA, we wanted to specifically investigate early-onset glaucoma patients. Thus, we filtered our dataset for those under the age of 40.
+
+```{r}
+# Patients %>%
+#   group_by(SEX) %>%
+#   summarize(n.sex=n())
+```
+
+```{r}
+PlotVfTimeSeries(Y = dat$dls,
+                 Location = dat$location,
+                 Time = dat$time,
+                 main = "Visual field sensitivity time series \n at each location",
+                 xlab = "Days from baseline visit",
+                 ylab = "Differential light sensitivity (dB)",
+                 line.reg = TRUE)
+
+
+plot1 <- ggplot(dat, aes(x = log(dls))) +
+  geom_histogram(binwidth = .01)
+plot2 <- ggplot(dat, aes(x = iop)) +
+  geom_histogram(binwidth = 1)
+plot1 + plot2
+```
+
+```{r}
+blind_spot <- c(26, 35) # define blind spot
+W <- HFAII_Queen[-blind_spot, -blind_spot] # HFA-II visual field adjacency matrix
+library(igraph)
+adj.graph <- graph.adjacency(W, mode = "undirected")
+plot(adj.graph)
+```
+
+# Modeling
+
+We begin by creating two different nonspatial models: one single pointwise linear regression model, and then 54 separate linear regression models for each location on the visual field.
+
+## Pointwise linear regression models
+
+First, we create our training and test datasets. Our training dataset is formed by the data from the first five observed visual fields (i.e. from the first five visits) of each patient. The test dataset is reflected as all future data (i.e. all other visual fields or visits).
+
+We perform Pointwise Linear Regression on the training data, where the dependent variable is differential light sensitivity (DLS). We fit the linear regression model using 5 independent variables: which eye the data point is, the patient's age, the patient's sex, mean deviation, time passed since initial visit. We fit this linear regression model in each of the 52 non-blind spots in the visual field, so that we have 52 models with identicial covariates predicting the DLS.
+
+Our model is written out below:
+
+$$\hat{\textrm{dls}} = \beta_0 + \beta_1\textrm{eye} + \beta_2\textrm{mean_deviation} + \beta_3\textrm{sex} + \beta_4\textrm{time} + \beta_5\textrm{age}$$
+
+```{r}
+dat <- dat %>%
+  group_by(patient) %>%
+  mutate(min_age = min(years)) %>%
+  filter(min_age <= 45)
+```
+
+```{r}
+#Pointwise Linear Regression
+set.seed(123)
+
+train_data <- dat %>%
+  group_by(patient) %>%
+  filter(visit <= 5)
+
+test_data <- dat %>%
+  group_by(patient) %>%
+  filter(visit > 5)
+```
+
+```{r}
+#| label: fitting a separate model for each location
+models <- train_data %>%
+  group_by(location, patient,eye) %>%
+  do(model = lm(dls ~ time, data = .))
+#fitting models for each location
+
+#collecting predictions for all models
+for(x in 1:nrow(models)){
+
+
+  location_model <- models$location[[x]]
+  patient_model <- models$patient[[x]]
+  eye_model <- models$eye[[x]]
+
+  location_x <- filter(test_data, 
+                       location == location_model,
+                       patient == patient_model,
+                       eye == eye_model) %>%
+    ungroup()
+
+  model <- models$model[[x]]
+
+  location_x <- location_x %>%
+    mutate(predict_dls = predict(model, newdata = location_x))
+
+  results_sep <- rbind(results_sep, location_x)
+}
+```
+
+```{r}
+patients <- c("4", "12", "30", "34", "43", "72", "76", "90", "125", "128", "130")
+
+# all_pred is for spatial model predictions
+all_pred <- data.frame(patient = integer(),
+                       eye = character(),
+                       location = integer(),
+                       visit = integer(),
+                       pred = numeric())
+for(patient in patients) {
+  for(which_eye in c("OD", "OS")) {
+    patientInt <- as.integer(patient)
+    dat_filter <- dat %>%
+      filter(patient==patientInt & eye==which_eye & visit > 5 & location != 26 & location != 35) %>%
+      select(location, visit, dls, eye)
+
+    pred <- read.csv(paste0("patient_predictions/ppd_pred_",which_eye,"_", patient, ".csv"), sep="\t")
+
+    pred <- pred %>%
+    mutate(location=seq(1,52))
+
+    pred_long <- pred %>%
+      gather(key = "visit", value = "value", -location) %>%
+      mutate(visit = gsub("V", "", visit),
+             visit = as.numeric(visit) + 4)
+    pred_long <- pred_long[, c("location", "visit", "value")]
+    colnames(pred_long) <- c("location", "visit", "pred_spatial")
+    pred_long <- pred_long %>%
+      filter(visit > 5 & visit <= max(dat_filter$visit))
+    pred_long <- pred_long %>%
+      mutate(
+        location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+      )
+
+    all_pred <- rbind(all_pred, data.frame(patient=as.integer(patient), eye=which_eye, location=as.integer(pred_long$location), visit=as.integer(pred_long$visit), pred=pred_long$pred_spatial))
+  }
+}
+```
+
+```{r}
+dat_filter <- dat %>%
+  filter(visit > 5 & location != 26 & location != 35)
+
+spatial_rmse <- rmse_vec(all_pred$pred, dat_filter$dls) # Final RMSE = 14.52834
+```
+
+```{r}
+pred_actual <- dat_filter %>%
+  ungroup() %>%
+  select(patient, eye, location, visit, dls) %>%
+  left_join(all_pred, by = c("patient", "eye", "location", "visit"))
+```
+
+## RMSE
+
+```{r}
+#| label: model_eval
+
+#to calculate heterogeneity, find RMSE for each location
+rmse_sep_models <- results_sep %>%
+  group_by(location) %>%
+  yardstick::rmse(predict_dls,dls) %>%
+  pull(.estimate)
+
+rmse_sep_models <- rmse_sep_models[!(seq(1:54) %in% c(26,35))]
+
+rmse_spatial <- pred_actual %>%
+  group_by(location) %>%
+  summarize(rmse=rmse_vec(dls, pred))
+
+rmse_spatial <- rmse_spatial$rmse
+
+PlotSensitivity(Y = rmse_sep_models,
+                main = "RMSE for DLS using PWLR",
+                legend.lab = "RMSE for DLS", legend.round = 1)
+
+PlotSensitivity(Y = rmse_spatial,
+                main = "RMSE for DLS using Spatial Model",
+                legend.lab = "RMSE for DLS", legend.round = 1)
+
+```
+
+```{r}
+spatial_results_visit <- pred_actual %>%
+  group_by(visit) %>%
+  summarize(rmse_visit=rmse_vec(dls, pred))
+
+results_visit <- results_sep %>%
+  group_by(visit) %>%
+  summarize(rmse_visit = rmse_vec(predict_dls, dls))
+
+results_visit$source <- "non_spatial"
+spatial_results_visit$source <- "spatial"
+combined_visit <- rbind(results_visit, spatial_results_visit)
+ggplot(data = combined_visit, aes(x = visit, y = rmse_visit, color = source)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3, shape = 21, fill = "#FFFFFF") +
+  labs(
+    title = "RMSE by Visit",
+    x = "Visit",
+    y = "RMSE"
+  ) +
+  scale_color_manual(values = c("non_spatial" = "#0072B2", "spatial" = "red")) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 20),
+    axis.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "#D3D3D3"),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+```{r}
+patients <- c("4", "12", "30", "34", "43", "72", "76", "90", "125", "128", "130")
+spatial_rmse_patient <- data.frame(patient = integer(),
+                           eye = character(),
+                           rmse_patient = numeric(),
+                           stringsAsFactors = FALSE)
+for(patient in patients) {
+  for(which_eye in c("OD", "OS")) {
+    patientInt <- as.integer(patient)
+    dat_filter <- dat %>%
+      filter(patient==patientInt & eye==which_eye & visit > 5 & location != 26 & location != 35) %>%
+      select(location, visit, dls, eye)
+
+    pred <- read.csv(paste0("patient_predictions/ppd_pred_",which_eye,"_", patient, ".csv"), sep="\t")
+
+    pred <- pred %>%
+    mutate(location=seq(1,52))
+
+    pred_long <- pred %>%
+      gather(key = "visit", value = "value", -location) %>%
+      mutate(visit = gsub("V", "", visit),
+             visit = as.numeric(visit) + 4)
+    pred_long <- pred_long[, c("location", "visit", "value")]
+    colnames(pred_long) <- c("location", "visit", "pred_spatial")
+    pred_long <- pred_long %>%
+      filter(visit > 5 & visit <= max(dat_filter$visit))
+    pred_long <- pred_long %>%
+      mutate(
+        location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+      )
+
+
+    rmse_val <- rmse_vec(pred_long$pred_spatial, dat_filter$dls)
+
+    spatial_rmse_patient <- rbind(spatial_rmse_patient, data.frame(patient=as.integer(patient), eye=which_eye, rmse_patient=rmse_val, stringsAsFactors = FALSE))
+  }
+}
+```
+
+```{r}
+results_patient <- results_sep %>%
+  group_by(patient, eye) %>%
+  summarize(rmse_patient=rmse_vec(predict_dls, dls))
+```
+
+```{r}
+results_patient$source <- "rmse_patient"
+spatial_rmse_patient$source <- "spatial_rmse_patient"
+combined_data <- rbind(results_patient, spatial_rmse_patient)
+ggplot(combined_data, aes(x = interaction(patient, eye), y = rmse_patient, fill = source)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.6, color = "black") +
+  labs(title = "RMSE by Patient-Eye Combination", x = "Patient-Eye", y = "RMSE") +
+  scale_fill_manual(values = c("#0072B2", "red")) +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 18, face = "bold", margin = margin(b = 10)),
+        axis.title = element_text(size = 14, margin = margin(t = 10)),
+        axis.text = element_text(size = 12, angle = 45, hjust = 1, vjust = 1),
+        legend.position = "bottom")
+```
+
+We calculate the RMSE for each model, first for the model fit to all the data, then individually for the models fit to each location.
+
+## Sensitivity Analysis
+
+Finally, we create two sensitivity plots. The first plot shows the RMSE for the single model, and the second plot shows the RMSE for the separate models for each location.
+
+```{r}
+sen_df <- data.frame(model = character(),
+                     eye = character(),
+                     rmse = numeric())
+
+for(which_eye in c("os", "od")) {
+  dat_filter <- dat %>%
+    filter(patient==4 & eye==toupper(which_eye) & visit > 5 & location != 26 & location != 35) %>%
+    select(location, visit, dls)
+
+  # two diff beta priors
+  for(beta_prior in c("1_5", "5_1")) {
+
+    pred <- read.csv(paste0("patient_predictions/ppd_", beta_prior, "_",which_eye,"_4.csv"), sep="\t")
+    pred <- pred %>%
+      mutate(location=seq(1,52))
+
+    pred_long <- pred %>%
+      gather(key = "visit", value = "value", -location) %>%
+      mutate(visit = gsub("V", "", visit),
+             visit = as.numeric(visit) + 4)
+    pred_long <- pred_long[, c("location", "visit", "value")]
+    colnames(pred_long) <- c("location", "visit", "pred_spatial")
+    pred_long <- pred_long %>%
+      filter(visit > 5 & visit <= max(dat_filter$visit))
+    pred_long <- pred_long %>%
+      mutate(
+        location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+      )
+    print(which_eye)
+    print(beta_prior)
+    curr_rmse <- rmse_vec(pred_long$pred_spatial, dat_filter$dls)
+    sen_df <- rbind(sen_df, data.frame(eye=which_eye, model=beta_prior, rmse=curr_rmse))
+  }
+
+  #nonspatial
+  results_sep_filter <- results_sep %>%
+    filter(patient==4 & eye==toupper(which_eye) & visit > 5 & location != 26 & location != 35)
+  curr_rmse <- rmse_vec(results_sep_filter$dls, results_sep_filter$predict_dls)
+  sen_df <- rbind(sen_df, data.frame(eye=which_eye, model="nonspatial", rmse=curr_rmse))
+
+  #initial spatial (uniform prior)
+
+  pred <- read.csv(paste0("patient_predictions/ppd_pred_",which_eye,"_4.csv"), sep="\t")
+
+  pred <- pred %>%
+    mutate(location=seq(1,52))
+
+  pred_long <- pred %>%
+    gather(key = "visit", value = "value", -location) %>%
+    mutate(visit = gsub("V", "", visit),
+           visit = as.numeric(visit) + 4)
+  pred_long <- pred_long[, c("location", "visit", "value")]
+  colnames(pred_long) <- c("location", "visit", "pred_spatial")
+  pred_long <- pred_long %>%
+    filter(visit > 5 & visit <= max(dat_filter$visit))
+  pred_long <- pred_long %>%
+    mutate(
+      location = location + ifelse(location >= 34, 2, ifelse(location >= 26, 1, 0))
+    )
+
+  curr_rmse <- rmse_vec(pred_long$pred_spatial, dat_filter$dls)
+
+  sen_df <- rbind(sen_df, data.frame(eye=which_eye, model="spatial", rmse=curr_rmse))
+}
+
+
+
+```
+
+```{r}
+sen <- sen_df %>%
+  pivot_wider(names_from = model, values_from = rmse) %>%
+  select(eye, `1_5`, `5_1`, spatial, nonspatial)
+
+temp_df <- sen %>%
+  select(eye, `1_5`, `5_1`) %>%
+  mutate(eye = if_else(eye == "os", "od", "os"))
+
+sen %>%
+  left_join(temp_df, by = "eye", suffix = c("", "_swap")) %>%
+  mutate(`1_5` = `5_1_swap`,
+         `5_1` = `1_5_swap`) %>%
+  select(eye, `1_5`, `5_1`, spatial, nonspatial)
+```
+
+## Spatial Modeling with CAR Models
+
+Early onset glaucoma =
+
+    3   4  12  13  27  30  34  43  46  47  61  72  76  90  98 102 114 125 126 128 130 135 137
+
+```{r}
+library(rstan)
+library(loo)
+
+#identifying patients with early onset glauocoma
+early_onset_glaucoma <- unique(train_data$patient)
+
+#setting options
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+blind_spot <- c(26, 35) # define blind spot
+dat_car <- dat_car[!dat_car$location %in% blind_spot, ] # remove blind spot locations
+dat_car$LocationNew <- as.numeric(as.factor(dat_car$location)) # reorder locations to be ordered integers
+dat_car <- dat_car %>%
+  group_by(patient) %>%
+  mutate(visit = match(time, unique(time)))
+
+#fitting OD eyes for all early onset patients
+for(x in early_onset_glaucoma){
+  data = dat_car %>%
+    filter(patient == x , eye == "OD")
+
+  time <- unique(data$time)
+  T <- length(unique(data$visit))
+  W <- HFAII_Queen[-blind_spot, -blind_spot] # visual field adjacency matrix
+  T_train <- 5
+  dataTrain <- data[data$visit <= T_train, ]
+  n <- length(unique(dataTrain$location))
+  stan_data <- list(
+    y = dataTrain$dls,
+    x = dataTrain$time,
+    s = dataTrain$LocationNew,
+    N = n * T_train,
+    n = n,
+    T = n,
+    W = W
+  )
+  iter = 4000
+  n_iter = iter/100
+  model_compiled <- stan_model("spatial.stan")
+  fit <- sampling(model_compiled, data = stan_data, chains = 1, iter = iter,
+                  refresh = n_iter)
+
+  saveRDS(fit, file = paste0("fit_",x,"_right.rds")) # an option for saving the stan model fit
+}
+
+#fitting all OS eyes
+for(x in early_onset_glaucoma){
+  data = dat_car %>%
+    filter(patient == x , eye == "OS")
+
+  time <- unique(data$time)
+  T <- length(unique(data$visit))
+  W <- HFAII_Queen[-blind_spot, -blind_spot] # visual field adjacency matrix
+  T_train <- 5
+  dataTrain <- data[data$visit <= T_train, ]
+  n <- length(unique(dataTrain$location))
+  stan_data <- list(
+    y = dataTrain$dls,
+    x = dataTrain$time,
+    s = dataTrain$LocationNew,
+    N = n * T_train,
+    n = n,
+    T = n,
+    W = W
+  )
+  iter = 4000
+  n_iter = iter/100
+  model_compiled <- stan_model("spatial.stan")
+  fit <- sampling(model_compiled, data = stan_data, chains = 1, iter = iter,
+                  refresh = n_iter)
+
+  saveRDS(fit, file = paste0("fit_",x,"_left.rds")) # an option for saving the stan model fit
+}
+```
+
+## Spatial model evaluation
+
+# Results
+
+What do you learn from your models?
+
+# Discussion
+
+What does it mean? Any avenues that still need to be investigated, now or in the future? Caveats to your findings? Honestly discuss strengths and weaknesses so the reader knows how to interpret and use results.
+
+# Limitations
+
+We may want to explore adding interaction terms to the model and considering what variables to include in a selection procedure.

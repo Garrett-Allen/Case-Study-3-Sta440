@@ -1,0 +1,63 @@
+
+```{r}
+
+dat <- dat %>% 
+  group_by(patient, location, eye) %>% 
+  mutate(visit = 1:n()) %>% 
+  ungroup()
+data_rac = dat %>%
+  filter(patient == 125 , eye == "OD")
+blind_spot <- c(26, 35) # define blind spot
+data_rac <- data_rac[!data_rac$location %in% blind_spot, ] # remove blind spot locations
+data_rac$LocationNew <- as.numeric(as.factor(data_rac$location)) # reorder locations to be ordered integers
+data_rac$Time <- data_rac$time
+W <- HFAII_Queen[-blind_spot, -blind_spot] # visual field adjacency matrix
+T_train <- 5
+T <- length(unique(data_rac$visit))
+data_racTrain <- data_rac[data_rac$visit <= T_train, ]
+n <- length(unique(data_racTrain$location))
+stan_data <- list(
+  y = data_racTrain$dls,
+  x = data_racTrain$Time,
+  s = data_racTrain$LocationNew,
+  N = n * T_train,
+  n = n,
+  T = T_train,
+  W = W
+)
+
+
+
+fit <- readRDS("~/case3-team06/fit_125_right_sensitivity51.rds")
+ 
+suppressWarnings({
+ beta0 <- params$beta0
+beta1 <- params$beta1
+beta0_vec <- params$beta0_vec
+beta1_vec <- params$beta1_vec
+sigma <- params$sigma
+
+n = 52
+n_sims <- length(beta0)
+pred <- array(dim = c(n_sims, n, T))
+for (sim in 1:n_sims) {
+ for (i in 1:n) {
+   for (t in 1:T) {
+     mu <- (beta0[sim] + beta0_vec[sim, i]) + (beta1[sim] + beta1_vec[sim, i]) * time[t]
+     pred[sim, i, t] <- rnorm(1, mu, sigma[sim, i])
+   }
+ }
+}  
+ 
+ppd_mean <- apply(pred, c(2, 3), mean) 
+y <- t(matrix(data_rac$dls, nrow = T, ncol = n)) # put the observed data in an n x T matrix
+resids <- y - ppd_mean
+
+rmse_vec(data_rac$dls, as.vector(ppd_mean))
+ 
+})
+
+#write.csv(resids, "resids_12_od_51.csv", row.names = FALSE)
+
+```
+
